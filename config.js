@@ -1,7 +1,7 @@
 // ChurchFantasie settings.
-// Paste your Supabase "Project URL" and "Publishable key" (or legacy "anon public" key) below.
+// SUPABASE_KEY: paste your Supabase "Publishable key" (Project Settings -> API Keys) between the quotes.
 window.CHAPEL_CONFIG = {
-  SUPABASE_URL: "",
+  SUPABASE_URL: "https://fwdaonxdvfsjhpomnulb.supabase.co",
   SUPABASE_KEY: "",
   BOT_USERNAME: "churshfinalfantasie_bot"
 };
