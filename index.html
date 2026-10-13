@@ -98,6 +98,15 @@ hr{border:0;border-top:1px solid var(--line);margin:24px 0}
 .live b{color:var(--cream);font-weight:600}
 .live .dotl{display:inline-flex;align-items:center;gap:6px}
 .pulse{width:8px;height:8px;border-radius:50%;background:#6ee7a0;box-shadow:0 0 0 0 #6ee7a088;animation:pl 2s infinite}
+.certificate.gold{background:linear-gradient(160deg,#fff6d8,#f3d58c 55%,#e9c06a);border-color:#c99a3b;outline-color:#a77a22}
+.certificate.gold .names,.certificate.gold .seal{color:#8a5a12}
+.vip{display:inline-block;font-size:11px;font-weight:700;letter-spacing:1px;padding:3px 8px;border-radius:10px;background:linear-gradient(90deg,#ffd28a,#ff96c1);color:#29152b;vertical-align:middle;margin-left:6px}
+.star{color:#ffd28a}
+.paid{border-color:#ffd28a66;background:linear-gradient(160deg,#ffd28a14,#ff96c10a)}
+.blur{filter:blur(6px)}
+.likes-row{display:flex;gap:-8px;margin:10px 0}
+.likes-row .avatar{width:40px;height:40px;margin-right:-10px;border:2px solid var(--panel)}
+.perks{margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:13px;line-height:1.8}
 @keyframes pl{0%{box-shadow:0 0 0 0 #6ee7a088}70%{box-shadow:0 0 0 8px #6ee7a000}100%{box-shadow:0 0 0 0 #6ee7a000}}
 </style>
 </head>
@@ -143,12 +152,16 @@ const ERR = {
   own_proposal: 'This is your own invitation — send it to your person.',
   not_for_you: 'This proposal was meant for someone else.',
   not_married: 'You are not married right now.',
-  not_admin: 'This page is only for the chapel owner.'
+  not_admin: 'This page is only for the chapel owner.',
+  renewal_is_free: 'This renewal is free — just say yes.',
+  already_vip: 'You are already a Chapel VIP ✦',
+  product_unavailable: 'This is not available right now.'
 };
 
 let S = null;          // server state
 let tab = 'chapel';
 let feed = [];
+let likes = null;
 let startParam = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param || new URLSearchParams(location.search).get('startapp');
 let busy = false;
 
@@ -203,11 +216,31 @@ async function act(fn, args, okMsg) {
   finally { busy = false; }
 }
 async function load() {
-  const [st, c] = await Promise.all([api('api_state', { start_param: startParam || null }), api('api_counts').catch(() => null)]);
-  S = st; S.counts = c;
+  const [st, c, shop] = await Promise.all([api('api_state', { start_param: startParam || null }), api('api_counts').catch(() => null), api('api_shop').catch(() => null)]);
+  S = st; S.counts = c; S.shop = shop || { prices: {} };
+  S.me.is_vip = !!S.shop.vip_until;
   updateNav();
 }
 const ppl = n => n + (n === 1 ? ' person' : ' people');
+const price = code => (S && S.shop && S.shop.prices[code]) || '';
+const hm = t => new Date(t).toLocaleString('en-US', {hour: '2-digit', minute: '2-digit'});
+async function buy(product) {
+  if (busy) return; busy = true;
+  try {
+    if (!tg || !tg.openInvoice) throw new Error('Please update Telegram to pay with Stars.');
+    const r = await fetch(`${CFG.SUPABASE_URL.replace(/\/$/, '')}/functions/v1/tg`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'invoice', init_data: tg.initData, product }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.link) throw new Error(ERR[d.message] || 'Payments are unavailable right now. Please try again later.');
+    tg.openInvoice(d.link, async status => {
+      if (status === 'paid') {
+        haptic('success'); toast('Payment received ✦');
+        for (let i = 0; i < 3; i++) { await new Promise(res => setTimeout(res, 1500)); try { await load(); render(); } catch (e) {} }
+      } else if (status === 'failed') toast('Payment failed — nothing was charged.');
+    });
+  } catch (e) { haptic('error'); toast(e.message); } finally { busy = false; }
+}
 function liveLine() {
   const c = S && S.counts; if (!c) return '';
   return `<div class="live"><span class="dotl"><span class="pulse"></span><b>${c.online}</b> online now</span>
@@ -366,10 +399,13 @@ function marriageBlock(m) {
       <div class="timer" data-until="${m.expires_at}">${left(m.expires_at)}</div>
       <div class="note">${fmtDate(m.expires_at)}${m.renewals ? ' · renewed ' + m.renewals + '×' : ''}</div>
     </div>
-    <div class="card">
+    <div class="card ${m.renew_needs_payment ? 'paid' : ''}">
       <p class="note" style="margin-top:0">${renewTxt}</p>
+      ${m.renew_needs_payment ? `<p class="note" style="margin:0">${m.my_renew && m.partner_renew ? '<b>You both said yes!</b> Seal another 48 hours for ' + price('renewal') + ' ⭐ — either of you can pay.' : 'Your first renewal was free. Each next one is ' + price('renewal') + ' ⭐ — or free with Chapel VIP.'}</p>` : ''}
+      ${m.renew_paid ? `<p class="note" style="margin:0"><span class="star">✦</span> Renewal is paid — it starts as soon as you both say yes.</p>` : ''}
       <div class="actions">
         ${m.my_renew ? '<button class="secondary" id="unrenew">Take back my yes</button>' : '<button class="primary" id="renew">Renew for 48 hours ♡</button>'}
+        ${m.renew_needs_payment ? `<button class="${m.my_renew ? 'primary' : 'secondary'}" id="payrenew">Pay ${price('renewal')} ⭐ &amp; renew</button>` : ''}
       </div>
     </div>
     <div class="actions">
@@ -385,6 +421,7 @@ function bindMarriage() {
   on('#renew', async () => { const r = await act('api_renew', { want: true }); if (r) { haptic('success'); toast(r.marriage.renewals > m.renewals ? 'Renewed! Another 48 hours ♡' : 'Your yes is saved ♡'); await load(); render(); } });
   on('#unrenew', async () => { if (await act('api_renew', { want: false }, 'Your yes was taken back')) { await load(); render(); } });
   on('#cert', () => showCertificate());
+  on('#payrenew', () => buy('renewal'));
   on('#msg', () => tg.openTelegramLink('https://t.me/' + m.partner_username));
   on('#divorce', () => confirmBox('End this chapter early? Your certificate will stay in your history.', async ok => {
     if (ok && await act('api_divorce', {}, 'The chapter has ended')) { await load(); render(); }
@@ -397,7 +434,7 @@ function confirmBox(text, cb) {
 }
 
 function certHtml(m) {
-  return `<div class="certificate">
+  return `<div class="certificate ${m.vip ? 'gold' : ''}">
     <div class="label">CHURCHFANTASIE</div><div class="seal">⚭</div>
     <h3>Certificate<br>of a little marriage</h3>
     <div class="names">${esc(m.me_name)}<br><span style="font-size:16px">&amp;</span><br>${esc(m.partner_name)}</div>
@@ -456,7 +493,7 @@ async function discover() {
     return;
   }
   app.innerHTML = '<div class="spin" style="margin-top:20vh"></div>';
-  try { feed = await api('api_feed'); } catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  try { let shop; [feed, likes, shop] = await Promise.all([api('api_feed'), api('api_likes').catch(() => null), api('api_shop').catch(() => null)]); if (shop) { S.shop = shop; S.me.is_vip = !!shop.vip_until; } } catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
   showFeed();
 }
 function matchesHtml() {
@@ -468,17 +505,36 @@ function matchesHtml() {
       ${pendingWith.has(String(x.id)) ? '<span class="pill">Proposed</span>' : `<button class="primary" style="flex:none;padding:10px 14px" data-propose="${x.id}" data-name="${esc(x.name)}" ${S.marriage ? 'disabled' : ''}>Propose</button>`}
     </div>`).join('');
 }
+function likesHtml() {
+  if (!likes || !likes.count) return '';
+  if (likes.unlocked) {
+    return `<div class="card paid"><h3>💘 ${likes.count} ${likes.count === 1 ? 'person likes' : 'people like'} you</h3>` + likes.people.map(p => `
+      <div class="row" style="margin-top:12px;justify-content:space-between"><div class="row">${avatar(p.photo, p.name)}<div><b>${esc(p.name)}${p.age ? ', ' + p.age : ''}</b>${p.vip ? '<span class="vip">VIP</span>' : ''}<div class="note">${esc(p.bio || '')}</div></div></div>
+      <button class="primary" style="flex:none;padding:10px 14px" data-likeback="${p.id}" data-name="${esc(p.name)}">♡ Like back</button></div>`).join('') +
+      `<p class="note" style="margin-bottom:0">${S.me.is_vip ? 'Included in your VIP ✦' : 'Unlocked until ' + hm(likes.until)}</p></div>`;
+  }
+  const dots = Array.from({length: Math.min(likes.count, 5)}, (_, i) => `<div class="avatar blur" style="background:hsl(${320 + i * 12},45%,${35 + i * 5}%)"></div>`).join('');
+  return `<div class="card paid"><h3>💘 ${likes.count} ${likes.count === 1 ? 'person likes' : 'people like'} you</h3><div class="likes-row">${dots}</div>
+    <div class="actions"><button class="primary" id="buylikes">See who — ${price('likes')} ⭐</button><button class="secondary" id="buyvip2">VIP — ${price('vip')} ⭐/mo</button></div></div>`;
+}
+function boostHtml() {
+  if (!S.me.discoverable) return '';
+  const until = S.shop && S.shop.boost_until;
+  return until ? `<p class="note"><span class="star">🚀</span> Boosted — you are shown first until ${hm(until)}.</p>`
+    : `<div class="actions" style="margin-top:10px"><button class="secondary" id="buyboost">🚀 Boost me — ${price('boost')} ⭐ · shown first for 24h</button></div>`;
+}
 function showFeed() {
   const p = feed[0];
   let html = `<div class="eyebrow">Find a match</div><div id="livebox">${liveLine()}</div>`;
   if (S.marriage) html += `<p class="note">You are married right now — you can still look around, but proposals wait until this chapter ends.</p>`;
+  html += likesHtml() + boostHtml();
   if (!p) {
     html += `<h2>That’s everyone for now.</h2><p class="lead">New people arrive at the chapel every day. Come back later — or invite your person directly.</p>
       <div class="actions"><button class="secondary" id="again">Refresh</button><button class="primary" id="inv" ${S.marriage ? 'disabled' : ''}>Invite your person ↗</button></div>`;
   } else {
     html += `<div class="profile-card" style="margin-top:14px">
       <div class="photo">${p.photo ? `<img src="${esc(p.photo)}" alt="" onerror="this.parentNode.textContent='${esc(p.name.charAt(0).toUpperCase())}'">` : esc(p.name.charAt(0).toUpperCase())}</div>
-      <div class="body"><h2 style="margin:0 0 6px">${esc(p.name)}, ${p.age}</h2><p class="lead" style="margin:0">${esc(p.bio || '')}</p>
+      <div class="body"><h2 style="margin:0 0 6px">${esc(p.name)}, ${p.age}${p.vip ? '<span class="vip">VIP</span>' : ''}</h2><p class="lead" style="margin:0">${esc(p.bio || '')}</p>
       <button class="ghost" id="report" style="padding:8px 0;margin-top:8px;font-size:12px">Report</button></div></div>
       <div class="swipe"><button class="secondary" id="pass">✕ Pass</button><button class="primary" id="like">♡ Like</button></div>`;
   }
@@ -496,6 +552,15 @@ function showFeed() {
   on('#pass', () => swipe(false));
   on('#like', () => swipe(true));
   on('#report', () => reportBox(p));
+  on('#buylikes', () => buy('likes'));
+  on('#buyvip2', () => buy('vip'));
+  on('#buyboost', () => buy('boost'));
+  app.querySelectorAll('[data-likeback]').forEach(b => b.onclick = async () => {
+    const r = await act('api_swipe', { target: +b.dataset.likeback, is_like: true }); if (!r) return;
+    likes.people = likes.people.filter(x => String(x.id) !== b.dataset.likeback); likes.count = Math.max(0, likes.count - 1);
+    if (r.match) { haptic('success'); await load(); itsAMatch({ id: +b.dataset.likeback, name: b.dataset.name }); }
+    showFeed();
+  });
   app.querySelectorAll('[data-propose]').forEach(b => b.onclick = () => vowPicker(+b.dataset.propose, b.dataset.name));
 }
 function itsAMatch(p) {
@@ -519,7 +584,7 @@ function profile() {
   const me = S.me;
   app.innerHTML = `
     <div class="eyebrow">Your chapel profile</div>
-    <div class="row" style="margin:16px 0 4px">${avatar(me.photo, me.name, true)}<div><h2 style="margin:0">${esc(me.name)}</h2><div class="note">${me.username ? '@' + esc(me.username) : 'No public @username'}</div></div></div>
+    <div class="row" style="margin:16px 0 4px">${avatar(me.photo, me.name, true)}<div><h2 style="margin:0">${esc(me.name)}${me.is_vip ? '<span class="vip">VIP</span>' : ''}</h2><div class="note">${me.username ? '@' + esc(me.username) : 'No public @username'}</div></div></div>
     <label for="pname">Name</label><input id="pname" maxlength="40" value="${esc(me.name)}">
     <div class="grid2">
       <div><label for="page">Age</label><input id="page" type="number" min="18" max="99" inputmode="numeric" value="${me.age ?? ''}"></div>
@@ -531,9 +596,14 @@ function profile() {
     <p class="note">Others see your name, age, bio and Telegram photo. Your @username is shared only with your spouse.</p>
     <div class="error" id="perr"></div>
     <div class="actions"><button class="primary" id="psave">Save ✦</button></div>
+    <div class="card paid">${me.is_vip
+      ? `<h3><span class="star">✦</span> Chapel VIP</h3><p class="note" style="margin:0">Active until ${fmtDate(S.shop.vip_until)}. It renews monthly — manage or cancel it in Telegram → Settings → My Stars.</p>`
+      : `<h3><span class="star">✦</span> Chapel VIP</h3><ul class="perks"><li>Free renewals — stay married as long as you both want</li><li>See who liked you</li><li>VIP badge on your profile</li><li>A golden wedding certificate</li></ul>
+         <div class="actions"><button class="primary" id="buyvip">Become VIP — ${price('vip')} ⭐ / month</button></div>`}</div>
     <div class="card"><h3>Bot notifications</h3><p class="note" style="margin:0">Get a message when someone opens your invitation, says yes, wants to renew — and 1 hour before your marriage ends.</p>
     <div class="actions"><button class="secondary" id="pnotify">Turn on notifications ♡</button></div></div>`;
   $('#pnotify').onclick = () => askNotify(true);
+  const bv = $('#buyvip'); if (bv) bv.onclick = () => buy('vip');
   $('#pg').value = me.gender || ''; $('#plf').value = me.looking_for || '';
   $('#psave').onclick = async () => {
     const p = { name: $('#pname').value.trim(), age: $('#page').value, gender: $('#pg').value, looking_for: $('#plf').value, bio: $('#pbio').value, discoverable: $('#pdisc').checked };
@@ -570,6 +640,12 @@ async function admin() {
       <div class="note">«${esc(m.vow)}»</div>
       <div class="note">${live ? `<span class="status">ends in ${left(m.expires_at)}</span>` : (m.end_reason === 'expired' ? 'ended automatically' : 'divorced early') + ' · ' + fmtDate(m.ended_at)}
       · started ${fmtDate(m.started_at)}${m.renewals ? ' · renewed ' + m.renewals + '×' : ''}${live && (m.a_renew || m.b_renew) ? ' · one yes to renew' : ''}</div></div>`; }).join('') || '<p class="note">No weddings yet.</p>';
+  } else if (adminView === 'money') {
+    let M; try { M = await api('api_admin_money'); } catch (e) { M = null; }
+    const names = { renewal: 'Renewal', boost: 'Boost', likes: 'Who liked you', vip: 'VIP' };
+    list = M ? `<div class="stats">${tile(M.stars_total + ' ⭐', 'earned total')}${tile(M.stars_30d + ' ⭐', 'last 30 days')}${tile(M.vip_now, 'VIP now')}</div>` +
+      (M.list.map(p => `<div class="card row" style="justify-content:space-between"><div><h3 style="margin:0">${esc(p.name)}</h3><div class="note">${names[p.product] || p.product}${p.recurring ? ' · auto-renewal' : ''} · ${ago(p.at)}</div></div><b class="star">${p.stars} ⭐</b></div>`).join('') || '<p class="note">No payments yet.</p>') +
+      '<p class="note">Withdraw Stars: open @churshfinalfantasie_bot in Telegram → bot profile → Balance (via Fragment), or spend them on Telegram Ads.</p>' : '<p class="error">Could not load payments.</p>';
   } else {
     list = A.invites.map(i => `<div class="card"><h3>${esc(i.from)}’s invitation <span class="tag ${i.status === 'accepted' ? 'pink' : ''}">${i.status === 'accepted' ? 'accepted by ' + esc(i.accepted_by) : i.status}</span></h3>
       <div class="note">«${esc(i.vow)}» · sent ${ago(i.created_at)}</div>
@@ -579,7 +655,7 @@ async function admin() {
     <div class="stats">${tile(s.users, 'users')}${tile(s.new_today, 'new today')}${tile(s.active_today, 'active today')}
       ${tile(s.married_now, 'married now')}${tile(s.weddings_total, 'weddings')}${tile(s.renewals_total, 'renewals')}
       ${tile(s.invites_sent, 'invites sent')}${tile(s.invite_opens, 'link opens')}${tile(s.discoverable, 'in Find a match')}</div>
-    <div class="seg"><button data-v="users" class="${adminView === 'users' ? 'on' : ''}">Users</button><button data-v="marriages" class="${adminView === 'marriages' ? 'on' : ''}">Weddings</button><button data-v="invites" class="${adminView === 'invites' ? 'on' : ''}">Invitations</button><button id="arefresh">↻</button></div>
+    <div class="seg"><button data-v="users" class="${adminView === 'users' ? 'on' : ''}">Users</button><button data-v="marriages" class="${adminView === 'marriages' ? 'on' : ''}">Weddings</button><button data-v="invites" class="${adminView === 'invites' ? 'on' : ''}">Invitations</button><button data-v="money" class="${adminView === 'money' ? 'on' : ''}">⭐ Money</button><button id="arefresh">↻</button></div>
     ${list}`;
   app.querySelectorAll('.seg [data-v]').forEach(b => b.onclick = () => { adminView = b.dataset.v; admin(); });
   $('#arefresh').onclick = () => admin();
