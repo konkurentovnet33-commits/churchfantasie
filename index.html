@@ -94,6 +94,11 @@ hr{border:0;border-top:1px solid var(--line);margin:24px 0}
 .seg button.on{border-color:var(--pink);color:var(--pink)}
 .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid #ffffff30;color:var(--muted);margin:4px 4px 0 0}
 .tag.pink{border-color:#ff96c180;color:var(--pink)}
+.live{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;margin:12px 0 4px;font-size:13px;color:var(--muted)}
+.live b{color:var(--cream);font-weight:600}
+.live .dotl{display:inline-flex;align-items:center;gap:6px}
+.pulse{width:8px;height:8px;border-radius:50%;background:#6ee7a0;box-shadow:0 0 0 0 #6ee7a088;animation:pl 2s infinite}
+@keyframes pl{0%{box-shadow:0 0 0 0 #6ee7a088}70%{box-shadow:0 0 0 8px #6ee7a000}100%{box-shadow:0 0 0 0 #6ee7a000}}
 </style>
 </head>
 <body>
@@ -198,8 +203,15 @@ async function act(fn, args, okMsg) {
   finally { busy = false; }
 }
 async function load() {
-  S = await api('api_state', { start_param: startParam || null });
+  const [st, c] = await Promise.all([api('api_state', { start_param: startParam || null }), api('api_counts').catch(() => null)]);
+  S = st; S.counts = c;
   updateNav();
+}
+const ppl = n => n + (n === 1 ? ' person' : ' people');
+function liveLine() {
+  const c = S && S.counts; if (!c) return '';
+  return `<div class="live"><span class="dotl"><span class="pulse"></span><b>${c.online}</b> online now</span>
+    <span><b>${c.searching}</b> looking for a match</span><span><b>${ppl(c.users)}</b> in the chapel</span>${c.married ? `<span><b>${c.married}</b> married right now</span>` : ''}</div>`;
 }
 
 // ───────── overlay ─────────
@@ -281,6 +293,7 @@ function chapel() {
       <div class="eyebrow">A little Vegas inside Telegram</div>
       <h1>Forever.<br><em>For 48 hours.</em></h1>
       <p class="lead">Invite your person. Or meet them here. Two yeses, one little wedding, and two whole days to write your story.</p>
+      ${liveLine()}
       <div class="actions"><button class="primary" id="invite">Invite your person ↗</button><button class="secondary" id="find">Find a match ♡</button></div>`;
   }
   if (S.incoming.length) {
@@ -434,8 +447,9 @@ function shareInvite(code, vow) {
 
 // ───────── discover ─────────
 async function discover() {
+  api('api_counts').then(c => { if (S) { S.counts = c; const el = document.getElementById('livebox'); if (el) el.innerHTML = liveLine(); } }).catch(() => {});
   if (!S.me.discoverable) {
-    app.innerHTML = `<div class="eyebrow">Find a match</div><h2>Someone else is looking for their yes.</h2>
+    app.innerHTML = `<div class="eyebrow">Find a match</div><h2>Someone else is looking for their yes.</h2><div id="livebox">${liveLine()}</div>
       <p class="lead">Create your chapel profile to see others and be seen. Only people you both like each other can propose.</p>
       <div class="actions"><button class="primary" id="mk">Create my profile ✦</button></div>`;
     $('#mk').onclick = () => { tab = 'profile'; render(); };
@@ -456,7 +470,7 @@ function matchesHtml() {
 }
 function showFeed() {
   const p = feed[0];
-  let html = '<div class="eyebrow">Find a match</div>';
+  let html = `<div class="eyebrow">Find a match</div><div id="livebox">${liveLine()}</div>`;
   if (S.marriage) html += `<p class="note">You are married right now — you can still look around, but proposals wait until this chapter ends.</p>`;
   if (!p) {
     html += `<h2>That’s everyone for now.</h2><p class="lead">New people arrive at the chapel every day. Come back later — or invite your person directly.</p>
