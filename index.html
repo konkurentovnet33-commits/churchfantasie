@@ -82,6 +82,18 @@ nav button.on{color:var(--pink)}
 .num{color:var(--pink);font-family:Georgia,serif;font-size:24px;width:34px;flex:none}
 .steps p{margin:0;color:var(--muted);font-size:13px;line-height:1.6}
 hr{border:0;border-top:1px solid var(--line);margin:24px 0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}
+.stat{border:1px solid var(--line);border-radius:12px;padding:12px 10px;background:#ffffff06}
+.stat b{display:block;font-family:Georgia,serif;font-size:26px;font-weight:400;color:var(--pink)}
+.stat span{font-size:11px;color:var(--muted)}
+.visitors{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.visitor{display:flex;align-items:center;gap:10px;font-size:14px}
+.visitor .avatar{width:32px;height:32px;font-size:15px}
+.seg{display:flex;gap:6px;margin-top:16px;overflow-x:auto}
+.seg button{flex:none;background:transparent;border:1px solid #ffffff30;color:var(--muted);padding:8px 12px;border-radius:20px;font-size:13px}
+.seg button.on{border-color:var(--pink);color:var(--pink)}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid #ffffff30;color:var(--muted);margin:4px 4px 0 0}
+.tag.pink{border-color:#ff96c180;color:var(--pink)}
 </style>
 </head>
 <body>
@@ -91,6 +103,7 @@ hr{border:0;border-top:1px solid var(--line);margin:24px 0}
   <button data-tab="chapel"><b>⚭</b>Chapel<span id="navdot"></span></button>
   <button data-tab="discover"><b>♡</b>Find a match</button>
   <button data-tab="profile"><b>✦</b>Profile</button>
+  <button data-tab="admin" id="navadmin" class="hidden"><b>♛</b>Admin</button>
 </nav>
 <div id="overlay" class="overlay hidden"><div class="sheet" id="sheet"></div></div>
 
@@ -124,7 +137,8 @@ const ERR = {
   no_longer_available: 'This invitation is no longer available.',
   own_proposal: 'This is your own invitation — send it to your person.',
   not_for_you: 'This proposal was meant for someone else.',
-  not_married: 'You are not married right now.'
+  not_married: 'You are not married right now.',
+  not_admin: 'This page is only for the chapel owner.'
 };
 
 let S = null;          // server state
@@ -146,6 +160,21 @@ function avatar(photo, name, big) {
   const cls = 'avatar' + (big ? ' big' : '');
   const ini = esc((name || '?').trim().charAt(0).toUpperCase());
   return photo ? `<div class="${cls}"><img src="${esc(photo)}" alt="" style="width:100%;height:100%;object-fit:cover" onerror="this.parentNode.textContent='${ini}'"></div>` : `<div class="${cls}">${ini}</div>`;
+}
+function ago(t) {
+  const s = Math.max(0, (Date.now() - new Date(t)) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  return Math.floor(s / 86400) + ' d ago';
+}
+function askNotify(force) {
+  try {
+    if (!tg || !tg.requestWriteAccess || !tg.isVersionAtLeast('6.9')) return;
+    let asked = false; try { asked = localStorage.getItem('cf_notify_asked') === '1'; } catch (e) {}
+    if (asked && !force) return;
+    tg.requestWriteAccess(ok => { try { localStorage.setItem('cf_notify_asked', '1'); } catch (e) {} if (force) toast(ok ? 'Notifications are on ♡' : 'Notifications stay off'); });
+  } catch (e) {}
 }
 function botLink(param) { return `https://t.me/${CFG.BOT_USERNAME}${param ? '?startapp=' + encodeURIComponent(param) : ''}`; }
 
@@ -187,12 +216,14 @@ function render() {
   if (S.invite && startParam) return inviteLanding();
   if (tab === 'discover') return discover();
   if (tab === 'profile') return profile();
+  if (tab === 'admin' && S.me.is_admin) return admin();
   return chapel();
 }
 
 function updateNav() {
   const n = S ? S.incoming.length : 0;
   $('#navdot').innerHTML = n ? `<span class="dot">${n}</span>` : '';
+  $('#navadmin').classList.toggle('hidden', !(S && S.me.is_admin));
 }
 
 function gate() {
@@ -208,7 +239,7 @@ function gate() {
     </div>`;
   $('#gok').onclick = async () => {
     if (!$('#g1').checked || !$('#g2').checked) { $('#gerr').textContent = 'Please confirm both to continue.'; return; }
-    if (await act('api_confirm_adult')) { await load(); render(); }
+    if (await act('api_confirm_adult')) { askNotify(); await load(); render(); }
   };
 }
 
@@ -264,6 +295,8 @@ function chapel() {
   if (!m && S.my_invite) {
     html += `<hr><div class="eyebrow">Your open invitation</div><div class="card">
       <p class="serif" style="font-style:italic;font-size:17px;margin-top:0">«${esc(S.my_invite.vow)}»</p>
+      <div class="note" style="margin-top:4px">Who opened your link</div>
+      ${S.my_invite.visitors.length ? `<div class="visitors">${S.my_invite.visitors.map(v => `<div class="visitor">${avatar(v.photo, v.name)}<div><b>${esc(v.name)}</b> <span class="note">opened ${ago(v.at)} · hasn’t answered yet</span></div></div>`).join('')}</div>` : '<p class="note" style="margin:6px 0 0">Nobody has opened it yet. We’ll message you in the bot when someone does.</p>'}
       <p class="note">Anyone with the link can say yes. It stays open for 7 days.</p>
       <div class="actions"><button class="primary" id="reshare">Send again ↗</button><button class="secondary" id="cancelinv">Cancel</button></div></div>`;
   }
@@ -483,7 +516,10 @@ function profile() {
     <label class="check" style="margin-top:16px"><input type="checkbox" id="pdisc" ${me.discoverable ? 'checked' : ''}> Show me in “Find a match”</label>
     <p class="note">Others see your name, age, bio and Telegram photo. Your @username is shared only with your spouse.</p>
     <div class="error" id="perr"></div>
-    <div class="actions"><button class="primary" id="psave">Save ✦</button></div>`;
+    <div class="actions"><button class="primary" id="psave">Save ✦</button></div>
+    <div class="card"><h3>Bot notifications</h3><p class="note" style="margin:0">Get a message when someone opens your invitation, says yes, wants to renew — and 1 hour before your marriage ends.</p>
+    <div class="actions"><button class="secondary" id="pnotify">Turn on notifications ♡</button></div></div>`;
+  $('#pnotify').onclick = () => askNotify(true);
   $('#pg').value = me.gender || ''; $('#plf').value = me.looking_for || '';
   $('#psave').onclick = async () => {
     const p = { name: $('#pname').value.trim(), age: $('#page').value, gender: $('#pg').value, looking_for: $('#plf').value, bio: $('#pbio').value, discoverable: $('#pdisc').checked };
@@ -491,6 +527,48 @@ function profile() {
     if (p.age && (+p.age < 18 || +p.age > 99)) { $('#perr').textContent = ERR.age_invalid; return; }
     if (await act('api_save_profile', { p }, 'Saved ✦')) { await load(); if (p.discoverable) { tab = 'discover'; } render(); }
   };
+}
+
+// ───────── admin
+let adminView = 'users';
+async function admin() {
+  app.innerHTML = '<div class="spin" style="margin-top:20vh"></div>';
+  let A;
+  try { A = await api('api_admin'); } catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  const s = A.stats;
+  const tile = (n, l) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`;
+  const g = {man: 'man', woman: 'woman', nonbinary: 'non-binary'};
+  let list = '';
+  if (adminView === 'users') {
+    list = A.users.map(u => `<div class="card row" style="align-items:flex-start">${avatar(u.photo, u.name)}<div style="min-width:0">
+      <h3 style="margin:0">${esc(u.name)}${u.age ? ', ' + u.age : ''} ${u.username ? `<span class="note">@${esc(u.username)}</span>` : ''}</h3>
+      <div class="note">joined ${ago(u.created_at)} · last seen ${ago(u.last_seen)}</div>
+      <div>${u.came_via ? `<span class="tag pink">came via ${esc(u.came_via)}’s link</span>` : '<span class="tag">came directly</span>'}
+      ${u.married_to ? `<span class="tag pink">⚭ married to ${esc(u.married_to)}</span>` : ''}
+      ${u.weddings ? `<span class="tag">${u.weddings} wedding${u.weddings > 1 ? 's' : ''}</span>` : ''}
+      ${u.gender ? `<span class="tag">${g[u.gender] || ''} → ${esc(u.looking_for || '')}</span>` : ''}
+      ${u.discoverable ? '<span class="tag">in Find a match</span>' : ''}
+      ${!u.adult ? '<span class="tag">hasn’t confirmed 18+</span>' : ''}
+      ${u.reported ? `<span class="tag" style="color:#ffb1a4;border-color:#ffb1a480">reported ${u.reported}×</span>` : ''}</div></div></div>`).join('') || '<p class="note">No users yet.</p>';
+  } else if (adminView === 'marriages') {
+    list = A.marriages.map(m => { const live = !m.ended_at && new Date(m.expires_at) > Date.now();
+      return `<div class="card"><h3>${esc(m.a)} &amp; ${esc(m.b)}</h3>
+      <div class="note">«${esc(m.vow)}»</div>
+      <div class="note">${live ? `<span class="status">ends in ${left(m.expires_at)}</span>` : (m.end_reason === 'expired' ? 'ended automatically' : 'divorced early') + ' · ' + fmtDate(m.ended_at)}
+      · started ${fmtDate(m.started_at)}${m.renewals ? ' · renewed ' + m.renewals + '×' : ''}${live && (m.a_renew || m.b_renew) ? ' · one yes to renew' : ''}</div></div>`; }).join('') || '<p class="note">No weddings yet.</p>';
+  } else {
+    list = A.invites.map(i => `<div class="card"><h3>${esc(i.from)}’s invitation <span class="tag ${i.status === 'accepted' ? 'pink' : ''}">${i.status === 'accepted' ? 'accepted by ' + esc(i.accepted_by) : i.status}</span></h3>
+      <div class="note">«${esc(i.vow)}» · sent ${ago(i.created_at)}</div>
+      <div class="note">${i.visitors.length ? 'Opened by: ' + i.visitors.map(v => esc(v.name) + ' (' + ago(v.at) + ')').join(', ') : 'Nobody opened it yet'}</div></div>`).join('') || '<p class="note">No invitations yet.</p>';
+  }
+  app.innerHTML = `<div class="eyebrow">Chapel owner</div><h2>Who’s in the chapel</h2>
+    <div class="stats">${tile(s.users, 'users')}${tile(s.new_today, 'new today')}${tile(s.active_today, 'active today')}
+      ${tile(s.married_now, 'married now')}${tile(s.weddings_total, 'weddings')}${tile(s.renewals_total, 'renewals')}
+      ${tile(s.invites_sent, 'invites sent')}${tile(s.invite_opens, 'link opens')}${tile(s.discoverable, 'in Find a match')}</div>
+    <div class="seg"><button data-v="users" class="${adminView === 'users' ? 'on' : ''}">Users</button><button data-v="marriages" class="${adminView === 'marriages' ? 'on' : ''}">Weddings</button><button data-v="invites" class="${adminView === 'invites' ? 'on' : ''}">Invitations</button><button id="arefresh">↻</button></div>
+    ${list}`;
+  app.querySelectorAll('.seg [data-v]').forEach(b => b.onclick = () => { adminView = b.dataset.v; admin(); });
+  $('#arefresh').onclick = () => admin();
 }
 
 // ───────── boot ─────────
